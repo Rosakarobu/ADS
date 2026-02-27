@@ -131,7 +131,8 @@ ver_dominios() {
     echo ""
     echo "=== Dominios configurados ==="
 
-    ZONAS=$(grep "zone " /etc/named.conf | grep -v "zone \".\"" | grep -v "zone \"localhost\"" | grep -v "zone \"127\"" | grep -v "zone \"0\"" | awk '{print $2}' | tr -d '"')
+    # Buscar solo las zonas del usuario (ignorar las de BIND9 por defecto)
+    ZONAS=$(grep "^zone" /etc/named.conf | awk '{print $2}' | tr -d '"' | grep -v "arpa\|localhost\|example")
 
     if [ -z "$ZONAS" ]; then
         echo "AVISO: No hay dominios configurados todavia."
@@ -142,7 +143,7 @@ ver_dominios() {
         for ZONA in $ZONAS; do
             ARCHIVO="/var/named/$ZONA.zone"
             if [ -f "$ARCHIVO" ]; then
-                IP=$(grep "^@" "$ARCHIVO" | grep "A" | awk '{print $4}')
+                IP=$(grep "^@" "$ARCHIVO" | grep " A " | awk '{print $4}')
                 echo "  $CONTADOR. $ZONA → $IP"
             else
                 echo "  $CONTADOR. $ZONA → (archivo de zona no encontrado)"
