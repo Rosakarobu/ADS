@@ -199,7 +199,7 @@ cambiar_dominio() {
 mostrar_menu() {
     echo ""
     echo "============================================"
-    echo "   Configuracion DNS
+    echo "   Configuracion DNS"
     echo "============================================"
     echo " 1. Instalar y configurar DNS"
     echo " 2. Cambiar dominio"
