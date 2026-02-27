@@ -19,7 +19,7 @@ verificar_ip_estatica() {
     IP_ACTUAL=$(ip addr show enp0s8 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
 
     if [ -n "$IP_ACTUAL" ]; then
-        echo "OK: La interfaz enp0s8 ya tiene IP: $IP_ACTUAL"
+        echo "OK: enp0s8 ya tiene IP: $IP_ACTUAL"
         IP_SERVIDOR=$IP_ACTUAL
     else
         echo "AVISO: No se encontro IP estatica en enp0s8."
@@ -49,13 +49,13 @@ EOF
     fi
 }
 
-# --- Instalar BIND9 ---
+# --- Instalar y configurar BIND9 ---
 instalar_bind9() {
     echo ""
-    echo "=== Instalando BIND9 ==="
+    echo "=== Instalando y configurando BIND9 ==="
 
     if systemctl is-active --quiet named; then
-        echo "OK: BIND9 ya esta corriendo. Se omite instalacion."
+        echo "OK: BIND9 ya esta instalado y corriendo. Se omite instalacion."
     else
         echo "Instalando paquetes necesarios..."
         pacman -Sy --noconfirm bind
@@ -71,28 +71,27 @@ instalar_bind9() {
     fi
 }
 
-# --- Configurar zona DNS ---
-configurar_zona_dns() {
+# --- Agregar dominio ---
+agregar_dominio() {
     echo ""
-    echo "=== Configurando zona DNS ==="
+    echo "=== Agregar nuevo dominio ==="
 
-    # Preguntar el dominio y la IP del cliente
     read -p "Ingresa el nombre del dominio (ej: reprobados.com): " ZONA
     read -p "Ingresa la IP a la que apuntara el dominio (ej: 192.168.100.30): " IP_CLIENTE
 
     if [ -z "$ZONA" ] || [ -z "$IP_CLIENTE" ]; then
         echo "ERROR: El dominio y la IP no pueden estar vacios."
-        exit 1
+        return
     fi
 
     ARCHIVO_ZONA="/var/named/$ZONA.zone"
-    CONF_LOCAL="/etc/named.conf"
 
-    # Verificar si la zona ya existe
-    if grep -q "$ZONA" "$CONF_LOCAL" 2>/dev/null; then
-        echo "OK: La zona $ZONA ya existe. Se omite."
-    else
-        cat >> /etc/named.conf << EOF
+    if grep -q "zone \"$ZONA\"" /etc/named.conf 2>/dev/null; then
+        echo "AVISO: El dominio $ZONA ya existe. Use la opcion 4 para eliminarlo primero."
+        return
+    fi
+
+    cat >> /etc/named.conf << EOF
 
 zone "$ZONA" IN {
     type master;
@@ -100,14 +99,9 @@ zone "$ZONA" IN {
     allow-update { none; };
 };
 EOF
-        echo "OK: Zona $ZONA agregada a named.conf"
-    fi
+    echo "OK: Zona $ZONA agregada a named.conf"
 
-    # Crear archivo de zona si no existe
-    if [ -f "$ARCHIVO_ZONA" ]; then
-        echo "OK: Archivo de zona ya existe. Se omite."
-    else
-        cat > "$ARCHIVO_ZONA" << EOF
+    cat > "$ARCHIVO_ZONA" << EOF
 \$TTL 86400
 @   IN  SOA     ns1.$ZONA. admin.$ZONA. (
                 2024010101  ; Serial
@@ -126,18 +120,46 @@ ns1 IN  A       $IP_SERVIDOR
 ; Registro CNAME para www
 www IN  CNAME   $ZONA.
 EOF
-        chown named:named "$ARCHIVO_ZONA"
-        echo "OK: Archivo de zona creado para $ZONA"
-    fi
 
+    chown named:named "$ARCHIVO_ZONA"
     systemctl restart named
+    echo "OK: Dominio $ZONA agregado correctamente apuntando a $IP_CLIENTE"
+}
+
+# --- Ver dominios configurados ---
+ver_dominios() {
+    echo ""
+    echo "=== Dominios configurados ==="
+
+    ZONAS=$(grep "zone " /etc/named.conf | grep -v "zone \".\"" | grep -v "zone \"localhost\"" | grep -v "zone \"127\"" | grep -v "zone \"0\"" | awk '{print $2}' | tr -d '"')
+
+    if [ -z "$ZONAS" ]; then
+        echo "AVISO: No hay dominios configurados todavia."
+    else
+        echo "Dominios encontrados:"
+        echo ""
+        CONTADOR=1
+        for ZONA in $ZONAS; do
+            ARCHIVO="/var/named/$ZONA.zone"
+            if [ -f "$ARCHIVO" ]; then
+                IP=$(grep "^@" "$ARCHIVO" | grep "A" | awk '{print $4}')
+                echo "  $CONTADOR. $ZONA → $IP"
+            else
+                echo "  $CONTADOR. $ZONA → (archivo de zona no encontrado)"
+            fi
+            CONTADOR=$((CONTADOR + 1))
+        done
+    fi
 }
 
 # --- Eliminar dominio ---
-eliminar_zona_dns() {
+eliminar_dominio() {
     echo ""
     echo "=== Eliminar dominio ==="
 
+    ver_dominios
+
+    echo ""
     read -p "Ingresa el dominio que deseas eliminar: " ZONA_ELIMINAR
 
     if [ -z "$ZONA_ELIMINAR" ]; then
@@ -145,24 +167,20 @@ eliminar_zona_dns() {
         return
     fi
 
+    if ! grep -q "zone \"$ZONA_ELIMINAR\"" /etc/named.conf 2>/dev/null; then
+        echo "ERROR: El dominio $ZONA_ELIMINAR no existe."
+        return
+    fi
+
     ARCHIVO_ZONA="/var/named/$ZONA_ELIMINAR.zone"
 
-    # Eliminar el archivo de zona
     if [ -f "$ARCHIVO_ZONA" ]; then
         rm -f "$ARCHIVO_ZONA"
-        echo "OK: Archivo de zona $ARCHIVO_ZONA eliminado."
-    else
-        echo "AVISO: No se encontro el archivo de zona para $ZONA_ELIMINAR."
+        echo "OK: Archivo de zona eliminado."
     fi
 
-    # Eliminar la entrada en named.conf
-    if grep -q "$ZONA_ELIMINAR" /etc/named.conf; then
-        # Borrar el bloque completo de la zona en named.conf
-        sed -i "/zone \"$ZONA_ELIMINAR\"/,/};/d" /etc/named.conf
-        echo "OK: Zona $ZONA_ELIMINAR eliminada de named.conf"
-    else
-        echo "AVISO: No se encontro $ZONA_ELIMINAR en named.conf"
-    fi
+    sed -i "/zone \"$ZONA_ELIMINAR\"/,/};/d" /etc/named.conf
+    echo "OK: Zona $ZONA_ELIMINAR eliminada de named.conf"
 
     systemctl restart named
     echo "OK: Servicio reiniciado."
@@ -177,36 +195,34 @@ ver_estado() {
         echo "OK: BIND9 esta corriendo."
     else
         echo "AVISO: BIND9 no esta corriendo."
+        echo "Intenta iniciarlo con: systemctl start named"
     fi
 
     echo ""
-    echo "--- Prueba de resolucion ---"
     read -p "Ingresa el dominio a consultar (ej: reprobados.com): " DOMINIO_TEST
-    nslookup $DOMINIO_TEST 127.0.0.1
-}
 
-# --- Cambiar dominio ---
-cambiar_dominio() {
+    if [ -z "$DOMINIO_TEST" ]; then
+        echo "ERROR: El dominio no puede estar vacio."
+        return
+    fi
+
     echo ""
-    echo "=== Cambiar dominio ==="
-    echo "Primero eliminaremos el dominio anterior."
-    eliminar_zona_dns
-    echo ""
-    echo "Ahora configuraremos el nuevo dominio."
-    configurar_zona_dns
+    echo "--- nslookup $DOMINIO_TEST ---"
+    nslookup $DOMINIO_TEST 127.0.0.1
 }
 
 mostrar_menu() {
     echo ""
-    echo "============================================"
+    echo "----------------------------------"
     echo "   Configuracion DNS"
-    echo "============================================"
-    echo " 1. Instalar y configurar DNS"
-    echo " 2. Cambiar dominio"
-    echo " 3. Eliminar dominio"
-    echo " 4. Ver estado del servicio"
-    echo " 5. Salir"
-    echo "============================================"
+    echo "----------------------------------"
+    echo " 1. Instalar y configurar BIND9"
+    echo " 2. Agregar dominio"
+    echo " 3. Ver dominios configurados"
+    echo " 4. Eliminar dominio"
+    echo " 5. Ver estado del servicio"
+    echo " 6. Salir"
+    echo "----------------------------------"
     read -p " Elige una opcion: " OPCION
 }
 
@@ -218,23 +234,25 @@ while true; do
     case $OPCION in
         1)
             instalar_bind9
-            configurar_zona_dns
             ;;
         2)
-            cambiar_dominio
+            agregar_dominio
             ;;
         3)
-            eliminar_zona_dns
+            ver_dominios
             ;;
         4)
-            ver_estado
+            eliminar_dominio
             ;;
         5)
+            ver_estado
+            ;;
+        6)
             echo "Saliendo..."
             exit 0
             ;;
         *)
-            echo "ERROR: Opcion invalida. Elige entre 1 y 5."
+            echo "ERROR: Opcion invalida. Elige entre 1 y 6."
             ;;
     esac
 done
